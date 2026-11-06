@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="ru" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Обнаружение лиц</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: { extend: {} }
+    };
+  </script>
+
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.1.0/dist/blazeface.js"></script>
+
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-gray-900 min-h-screen">
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react">
+    const { useState, useRef } = React;
+
+    function App() {
+      const [image, setImage] = useState(null);
+      const [imageElement, setImageElement] = useState(null);
+      const [model, setModel] = useState(null);
+      const [loading, setLoading] = useState(false);
+      const [modelLoading, setModelLoading] = useState(false);
+      const [error, setError] = useState(null);
+      const [facesFound, setFacesFound] = useState(null);
+      const canvasRef = useRef(null);
+      const fileInputRef = useRef(null);
+
+      const loadModel = async () => {
+        if (model) return model;
+        setModelLoading(true);
+        try {
+          const loadedModel = await window.blazeface.load();
+          setModel(loadedModel);
+          return loadedModel;
+        } catch (err) {
+          setError('Ошибка загрузки модели. Проверьте подключение к интернету.');
+          throw err;
+        } finally {
+          setModelLoading(false);
+        }
+      };
+
+      const handleFile = (file) => {
+        if (!file || !file.type.startsWith('image/')) {
+          setError('Пожалуйста, выберите файл-изображение');
+          return;
+        }
+
+        setError(null);
+        setFacesFound(null);
+
+        const reader = new FileReader();
+        reader.onerror = () => setError('Не удалось прочитать файл');
+        reader.onload = (e) => {
+          const imgSrc = e.target.result;
+          setImage(imgSrc);
+
+          const img = new Image();
+          img.onload = () => {
+            setImageElement(img);
+            if (canvasRef.current) {
+              canvasRef.current.width = img.width;
+              canvasRef.current.height = img.height;
+              const ctx = canvasRef.current.getContext('2d');
+              if (ctx) {
+                ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+              }
+            }
+          };
+          img.onerror = () => setError('Не удалось загрузить изображение');
+          img.src = imgSrc;
+        };
+        reader.readAsDataURL(file);
+      };
+
+      const handleDrop = (e) => {
+        e.preventDefault();
+        const file = e.dataTransfer.files?.[0];
+        if (file) handleFile(file);
+      };
+
+      const handleDragOver = (e) => {
+        e.preventDefault();
+      };
+
+      const handleFileInput = (e) => {
+        const file = e.target.files?.[0];
+        if (file) handleFile(file);
+        e.target.value = '';
+      };
+
+      const openFilePicker = () => fileInputRef.current?.click();
+
+      const detectFaces = async () => {
+        if (!imageElement) return;
+
+        setLoading(true);
+        setError(null);
+        setFacesFound(null);
+
+        try {
+          const currentModel = await loadModel();
+          const predictions = await currentModel.estimateFaces(imageElement, false);
+
+          const processed = tf.tidy(() => {
+            return predictions.map((p) => ({
+              x: p.topLeft[0],
+              y: p.topLeft[1],
+              width: p.bottomRight[0] - p.topLeft[0],
+              height: p.bottomRight[1] - p.topLeft[1],
+            }));
+          });
+
+          setFacesFound(processed.length);
+
+          if (canvasRef.current) {
+            const ctx = canvasRef.current.getContext('2d');
+            if (ctx) {
+              ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+
+              if (processed.length > 0) {
+                ctx.strokeStyle = '#34d399';
+                ctx.lineWidth = 3;
+                processed.forEach((box) => {
+                  ctx.strokeRect(box.x, box.y, box.width, box.height);
+                });
+              }
+            }
+          }
+        } catch (err) {
+          if (!error) setError('Ошибка при обработке изображения');
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const downloadResult = () => {
+        if (!imageElement) return;
+
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = imageElement.width;
+        tempCanvas.height = imageElement.height;
+        const ctx = tempCanvas.getContext('2d');
+        if (!ctx) return;
+
+        ctx.drawImage(imageElement, 0, 0);
+        if (canvasRef.current) {
+          ctx.drawImage(canvasRef.current, 0, 0);
+        }
+
+        const link = document.createElement('a');
+        link.download = 'faces-detected.png';
+        link.href = tempCanvas.toDataURL('image/png');
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      };
+
+      const reset = () => {
+        setImage(null);
+        setImageElement(null);
+        setFacesFound(null);
+        setError(null);
+        if (canvasRef.current) {
+          const ctx = canvasRef.current.getContext('2d');
+          if (ctx) ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+        }
+      };
+
+      return (
+        <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-4">
+          <div className="w-full max-w-4xl">
+            {!image ? (
+              <div
+                onDrop={handleDrop}
+                onDragOver={handleDragOver}
+                onClick={openFilePicker}
+                className="border-2 border-dashed border-gray-600 hover:border-gray-400 rounded-lg p-16 text-center cursor-pointer transition-colors"
+              >
+                <p className="text-2xl mb-3">Перетащите изображение сюда</p>
+                <p className="text-gray-400">или нажмите, чтобы выбрать файл</p>
+              </div>
+            ) : (
+              <div className="relative inline-block w-full">
+                <img
+                  src={image}
+                  alt="Загруженное изображение"
+                  className="max-w-full h-auto rounded-lg mx-auto block"
+                />
+                <canvas
+                  ref={canvasRef}
+                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
+                  style={{ maxWidth: '100%', maxHeight: '100%' }}
+                />
+                {facesFound !== null && facesFound === 0 && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/60 rounded-lg">
+                    <p className="text-3xl font-bold text-red-400">Лица не обнаружены</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {error && (
+              <p className="text-red-400 mt-4 text-center font-medium">{error}</p>
+            )}
+
+            <div className="flex gap-3 mt-6 justify-center flex-wrap">
+              {!image ? (
+                <button
+                  onClick={openFilePicker}
+                  className="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold transition-colors"
+                >
+                  Выбрать фото
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={detectFaces}
+                    disabled={loading || modelLoading}
+                    className="px-6 py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg font-semibold transition-colors"
+                  >
+                    {modelLoading ? 'Загрузка модели...' : loading ? 'Обработка...' : 'Найти лица'}
+                  </button>
+                  {facesFound !== null && facesFound > 0 && (
+                    <button
+                      onClick={downloadResult}
+                      className="px-6 py-3 bg-purple-600 hover:bg-purple-700 rounded-lg font-semibold transition-colors"
+                    >
+                      Скачать результат
+                    </button>
+                  )}
+                  <button
+                    onClick={reset}
+                    className="px-6 py-3 bg-gray-700 hover:bg-gray-600 rounded-lg font-semibold transition-colors"
+                  >
+                    Новое фото
+                  </button>
+                </>
+              )}
+            </div>
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleFileInput}
+              className="hidden"
+            />
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
